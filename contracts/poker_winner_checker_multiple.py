@@ -3,217 +3,173 @@
 
 import json
 import typing
-from dataclasses import dataclass
 from genlayer import *
 
 
-@allow_storage
-@dataclass
-class Player:
-    address: Address
-    hand: str
-    hand_rank: str
-    is_winner: bool
-
-
-class PokerWinnerChecker(gl.Contract):
-    has_resolved: bool
-    players: DynArray[Player]
+class PokerWinnerCheckerMultiple(gl.Contract):
+    player_hands: DynArray[str]  # Array of all player hands
     board_cards: str
+    winner_index: u256  # Index of the winner in the array
+    tie_players: DynArray[u256]  # Array of player indices in case of tie
 
-    def __init__(self, board_cards: str = ""):
+    def __init__(self):
+        # DynArray se inicializan automáticamente por GenLayer
+        self.board_cards = ""
+        self.winner_index = u256(0)
+
+    @gl.public.view
+    def get_state(self) -> typing.Any:
         """
-        Initializes a new instance of the poker winner checker.
-
-        Args:
-            board_cards (str): The board cards in card notation (e.g., "♠A♥K♦Q♣J♠10"). Default is empty string.
-
-        Attributes:
-            has_resolved (bool): Indicates whether the game's resolution has been processed. Default is False.
-            players (DynArray[Player]): Array of players with their hands and information.
-            board_cards (str): The board cards in card notation.
+        Returns the current state of the contract.
         """
-        self.has_resolved = False
-        self.board_cards = board_cards
+        tie_players_list = []
+        for i in range(len(self.tie_players)):
+            tie_players_list.append(int(self.tie_players[i]))
+
+        return {
+            "player_hands": list(self.player_hands),
+            "board_cards": self.board_cards,
+            "winner_index": int(self.winner_index),
+            "tie_players": tie_players_list,
+            "is_tie": int(self.winner_index) == 999999,
+        }
+
+    def _count_cards(self, cards_str: str) -> int:
+        """
+        Count the number of cards in a string representation.
+        Each card is represented by a suit symbol (♠, ♥, ♦, ♣) followed by a rank.
+        """
+        if not cards_str:
+            return 0
+
+        suit_symbols = ["♠", "♥", "♦", "♣"]
+        count = 0
+        for symbol in suit_symbols:
+            count += cards_str.count(symbol)
+        return count
 
     @gl.public.write
-    def add_player(self, address: str, hand: str):
+    def calculate_winner_and_store(
+        self, players: DynArray[str], board_cards: str
+    ) -> typing.Any:
         """
-        Add a new player to the game.
-
-        Args:
-            address (str): The player's address.
-            hand (str): The player's hand in card notation (e.g., "♠A♠A", "♥K♥Q").
+        Calculate winner from the provided players and board, and store the result into contract state.
+        This replaces the stored player_hands with 'players', sets winner/tie state.
         """
-        if self.has_resolved:
-            raise Exception("Cannot add players after game is resolved")
+        if len(players) < 2:
+            raise Exception("At least 2 players are required")
 
-        player = Player(
-            address=Address(address), hand=hand, hand_rank="", is_winner=False
-        )
-        self.players.append(player)
+        # Validate board_cards: must be empty (pre-flop) or have exactly 5 cards
+        card_count = self._count_cards(board_cards)
+        if card_count != 0 and card_count != 5:
+            raise Exception(
+                f"Board cards must have exactly 5 cards or be empty (pre-flop). Found {card_count} cards."
+            )
 
-    @gl.public.write
-    def set_board_cards(self, board_cards: str):
-        """
-        Set or update the board cards.
+        # Build input and call the same internal prompt
+        hands_list = []
+        for i in range(len(players)):
+            hands_list.append(f"Player {i}: {players[i]}")
+        board_cards_str = board_cards if board_cards else "None"
 
-        Args:
-            board_cards (str): The board cards in card notation (e.g., "♠A♥K♦Q♣J♠10").
-        """
-        if self.has_resolved:
-            raise Exception("Cannot change board cards after game is resolved")
-        self.board_cards = board_cards
-
-    @gl.public.write
-    def calculate_winner(self) -> typing.Any:
-        """
-        Calculate the winner among all players.
-
-        Returns:
-            dict: Contains winner information, hand ranks, and tie information.
-        """
-
-        def determine_winner() -> str:
-            hands_list = []
-            for i in range(len(self.players)):
-                player = self.players[i]
-                hands_list.append(f"Player {i} ({player.address}): {player.hand}")
-
+        def determine_winner(hands_list: list[str], board_cards_str: str) -> str:
             task = f"""
-Determine who wins in this poker hand texas hold'em situation with multiple players.
+You are an expert poker judge determining the winner in a Texas Hold'em poker hand with multiple players.
 
-Card notation uses suit symbols: ♠ (spades), ♥ (hearts), ♦ (diamonds), ♣ (clubs)
-Examples: ♠A♠A (pocket Aces of spades), ♥K♥K (pocket Kings of hearts), ♠A♠K (Ace-King suited)
+TEXAS HOLD'EM RULES:
+- Each player has 2 private cards (their "hand")
+- There are 5 community cards on the board (shared by all players)
+- Each player makes their best 5-card poker hand using any combination of their 2 private cards and the 5 community cards
+- You can use 0, 1, or 2 of your private cards, and 5, 4, or 3 of the community cards respectively
+- The player with the highest-ranking 5-card hand wins
 
+HAND RANKINGS (from highest to lowest):
+1. Royal Flush: A-K-Q-J-10 all of the same suit
+2. Straight Flush: Five consecutive cards of the same suit (e.g., 9-8-7-6-5 of hearts)
+3. Four of a Kind: Four cards of the same rank (e.g., four Kings)
+4. Full House: Three of a kind + a pair (e.g., three 7s and two Aces)
+5. Flush: Five cards of the same suit, not in sequence
+6. Straight: Five consecutive cards of different suits (e.g., 10-9-8-7-6)
+7. Three of a Kind: Three cards of the same rank (e.g., three Queens)
+8. Two Pair: Two different pairs (e.g., two Kings and two 5s)
+9. One Pair: Two cards of the same rank (e.g., two Jacks)
+10. High Card: No pair, highest card wins
+
+COMPARING HANDS:
+- If two players have the same hand type, compare the rank values:
+  - Card ranks: 2 < 3 < 4 < 5 < 6 < 7 < 8 < 9 < 10 < J < Q < K < A
+- For pairs/trips/quads: compare the rank of the pair/trip/quad first
+- For full house: compare the three-of-a-kind rank first, then the pair rank
+- For two pair: compare the higher pair first, then the lower pair, then the kicker
+- For one pair: compare the pair rank first, then kickers in descending order
+- For high card: compare cards in descending order
+- If all 5 cards are identical in rank (but different suits), it's a tie
+
+TIE RULES:
+- If multiple players have identical 5-card hands (same ranks, regardless of suits), they tie
+- Example: Player 1 has K♠K♥ and Player 2 has K♦K♣ with board K♠Q♠J♠10♠9♠ - both have King-high flush, it's a tie
+
+CARD NOTATION:
+- Suit symbols: ♠ (spades), ♥ (hearts), ♦ (diamonds), ♣ (clubs)
+- Ranks: A (Ace), K (King), Q (Queen), J (Jack), 10, 9, 8, 7, 6, 5, 4, 3, 2
+- Example: "♠A♥K" means Ace of spades and King of hearts
+
+CURRENT GAME:
 Player hands:
 {chr(10).join(hands_list)}
-Board cards: {self.board_cards if self.board_cards else "None"}
+Board cards: {board_cards_str}
+
+Analyze each player's best possible 5-card hand by combining their 2 private cards with the 5 community cards.
+Determine which player(s) have the highest-ranking hand.
 
 Respond in JSON:
 {{
-    "winner_index": int, // Index of winning player (0-based), or -1 if tie
-    "hand_ranks": [str], // Array of hand ranks for each player in order
-    "tie_players": [int] // Array of player indices if there's a tie (empty if no tie)
+    "winner_index": int, // Index of winning player (0-based), or -1 if there is a tie
+    "tie_players": [int] // Array of all player indices who tied for the win (empty array if no tie, all tied players if winner_index is -1)
 }}
-It is mandatory that you respond only using the JSON format above,
-nothing else. Your output must be only JSON.
+
+IMPORTANT: 
+- If there is a single winner, set winner_index to that player's index and tie_players to []
+- If there is a tie, set winner_index to -1 and tie_players to an array containing all tied player indices
+- Your response must be ONLY valid JSON, nothing else.
             """
             result = gl.nondet.exec_prompt(task, response_format="json")
             return json.dumps(result, sort_keys=True)
 
-        if self.has_resolved:
-            return "Already resolved"
+        result_json_str = gl.eq_principle.strict_eq(
+            lambda: determine_winner(hands_list, board_cards_str)
+        )
 
-        if len(self.players) < 2:
-            raise Exception("At least 2 players are required")
+        # Parse the JSON string returned by strict_eq
+        result_json = json.loads(result_json_str)
 
-        result_json = gl.eq_principle.strict_eq(determine_winner)
-
-        self.has_resolved = True
-
-        # Update board cards if needed (should already be set)
+        # Persist state
         winner_index = result_json.get("winner_index", -1)
-        hand_ranks = result_json.get("hand_ranks", [])
         tie_players = result_json.get("tie_players", [])
 
-        # Update all players with their hand ranks
-        for i in range(len(self.players)):
-            if i < len(hand_ranks):
-                self.players[i].hand_rank = hand_ranks[i]
-
-            # Mark winners
-            if winner_index >= 0:
-                self.players[i].is_winner = i == winner_index
-            else:
-                # Tie situation
-                self.players[i].is_winner = i in tie_players
-
-        # Build result with player information
-        winners = []
         if winner_index >= 0:
-            winners.append(
-                {
-                    "index": winner_index,
-                    "address": str(self.players[winner_index].address),
-                    "hand": self.players[winner_index].hand,
-                    "hand_rank": self.players[winner_index].hand_rank,
-                }
-            )
+            self.winner_index = u256(winner_index)
         else:
-            for idx in tie_players:
-                winners.append(
-                    {
-                        "index": idx,
-                        "address": str(self.players[idx].address),
-                        "hand": self.players[idx].hand,
-                        "hand_rank": self.players[idx].hand_rank,
-                    }
-                )
+            self.winner_index = u256(999999)
+
+        # reset tie_players storage array
+        while len(self.tie_players) > 0:
+            self.tie_players.pop()
+        for idx in tie_players:
+            self.tie_players.append(u256(idx))
+
+        # replace stored player_hands with provided players
+        # Clear existing player_hands first
+        while len(self.player_hands) > 0:
+            self.player_hands.pop()
+        # Add new player hands
+        for hand in players:
+            self.player_hands.append(hand)
+
+        self.board_cards = board_cards
 
         return {
             "winner_index": winner_index,
-            "winners": winners,
-            "hand_ranks": hand_ranks,
             "tie_players": tie_players,
             "is_tie": winner_index < 0,
-        }
-
-    @gl.public.view
-    def get_winner(self) -> dict[str, typing.Any]:
-        """
-        Get the resolution data from the last resolve call.
-
-        Returns:
-            dict: Contains all players information, board cards, and winner status.
-        """
-        players_data = []
-        for i in range(len(self.players)):
-            player = self.players[i]
-            players_data.append(
-                {
-                    "index": i,
-                    "address": str(player.address),
-                    "hand": player.hand,
-                    "hand_rank": player.hand_rank,
-                    "is_winner": player.is_winner,
-                }
-            )
-
-        winners = [p for p in players_data if p["is_winner"]]
-
-        return {
-            "has_resolved": self.has_resolved,
-            "board_cards": self.board_cards,
-            "players": players_data,
-            "winners": winners,
-            "total_players": len(self.players),
-        }
-
-    @gl.public.view
-    def get_players(self) -> dict[str, typing.Any]:
-        """
-        Get all players information without resolution data.
-
-        Returns:
-            dict: Contains all players and board cards.
-        """
-        players_data = []
-        for i in range(len(self.players)):
-            player = self.players[i]
-            players_data.append(
-                {
-                    "index": i,
-                    "address": str(player.address),
-                    "hand": player.hand,
-                    "hand_rank": player.hand_rank,
-                    "is_winner": player.is_winner,
-                }
-            )
-
-        return {
-            "players": players_data,
-            "board_cards": self.board_cards,
-            "total_players": len(self.players),
-            "has_resolved": self.has_resolved,
         }
