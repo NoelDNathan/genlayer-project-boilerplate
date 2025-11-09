@@ -38,7 +38,9 @@ class PokerTournament(gl.Contract):
     player_eliminations: DynArray[PlayerElimination]  # Array of player eliminations
     players_set: bool  # Whether players have been set (can only be set once)
     has_cooler: bool  # Whether the last hand had a cooler situation
-    cooler_player_indices: DynArray[u256]  # Array of player indices who were eliminated in coolers
+    cooler_player_indices: DynArray[
+        u256
+    ]  # Array of player indices who were eliminated in coolers
     winner_hand_rank: (
         str  # Hand rank of the winner (e.g., "Pocket Aces", "Flush", "Straight")
     )
@@ -148,7 +150,7 @@ class PokerTournament(gl.Contract):
         else:
             # Multiple players with balance, or only one player registered (tournament not started)
             self.tournament_finished = False
-            
+
     def _create_elimination_record(
         self,
         player_index: int,
@@ -187,7 +189,11 @@ class PokerTournament(gl.Contract):
         # Check if this player is in the list of cooler players
         if cooler_player_indices is None:
             cooler_player_indices = []
-        if has_cooler and cooler_player_indices and player_index in cooler_player_indices:
+        if (
+            has_cooler
+            and cooler_player_indices
+            and player_index in cooler_player_indices
+        ):
             is_cooler = True
         else:
             is_cooler = False
@@ -473,7 +479,7 @@ IMPORTANT:
         # Store winner hand rank and cooler information
         self.winner_hand_rank = winner_hand_rank if winner_hand_rank else ""
         self.has_cooler = has_cooler
-        
+
         # Reset and store cooler player indices
         while len(self.cooler_player_indices) > 0:
             self.cooler_player_indices.pop()
@@ -535,7 +541,7 @@ IMPORTANT:
             if previous_balance > 0 and current_balance == 0:
                 # Player was eliminated in this hand
                 # Create elimination record directly using cooler information from determine_winner
-                
+
                 # Determine opponent hand(s) - the winner(s)
                 if winner_index >= 0:
                     opponent_hand = players[winner_index]
@@ -660,7 +666,7 @@ IMPORTANT:
         cooler_indices_list = []
         for i in range(len(self.cooler_player_indices)):
             cooler_indices_list.append(int(self.cooler_player_indices[i]))
-        
+
         return {
             "has_cooler": self.has_cooler,
             "cooler_player_indices": cooler_indices_list,
