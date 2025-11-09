@@ -6,6 +6,7 @@ import typing
 from dataclasses import dataclass
 from genlayer import *
 
+
 @allow_storage
 @dataclass
 class PlayerElimination:
@@ -18,11 +19,14 @@ class PlayerElimination:
     hand_rank_player: str
     hand_rank_opponent: str
 
+
 class PokerTournament(gl.Contract):
     player_balances: DynArray[
         u256
     ]  # Array of player balances (indexed by player position)
-    player_addresses: DynArray[Address]  # Array of player addresses (indexed by player position)
+    player_addresses: DynArray[
+        Address
+    ]  # Array of player addresses (indexed by player position)
     player_hands: DynArray[str]  # Array of all player hands
     player_eliminations: DynArray[PlayerElimination]  # Array of player eliminations
     board_cards: str
@@ -133,7 +137,9 @@ class PokerTournament(gl.Contract):
             self.tournament_finished = False
 
     @gl.public.write
-    def set_players(self, balances: DynArray[int], addresses: DynArray[str]) -> typing.Any:
+    def set_players(
+        self, balances: DynArray[int], addresses: DynArray[str]
+    ) -> typing.Any:
         """
         Set the balances for all players.
 
@@ -217,6 +223,11 @@ class PokerTournament(gl.Contract):
         # Ensure player_balances array is large enough
         while len(self.player_balances) < len(players):
             self.player_balances.append(u256(0))
+
+        # Save previous balances BEFORE deducting bets (to detect eliminations)
+        previous_balances = []
+        for i in range(len(players)):
+            previous_balances.append(int(self.player_balances[i]))
 
         # Validate that each player has sufficient balance for their bet
         for i in range(len(players)):
@@ -362,6 +373,42 @@ IMPORTANT:
                 amount = pot_per_player + (1 if i < remainder else 0)
                 self.player_balances[tied_idx] = u256(current_balance + amount)
                 self.last_pot_distribution[tied_idx] = u256(amount)
+
+        # Track player eliminations (balance went from > 0 to == 0)
+        for i in range(len(players)):
+            previous_balance = previous_balances[i]
+            current_balance = int(self.player_balances[i])
+
+            # Player was eliminated if they had balance before and now have 0
+            if previous_balance > 0 and current_balance == 0:
+                # Player was eliminated in this hand
+                # Get player address
+                player_address = (
+                    self.player_addresses[i]
+                    if i < len(self.player_addresses)
+                    else Address("0x0000000000000000000000000000000000000000")
+                )
+
+                # Determine opponent hand(s) - the winner(s)
+                if winner_index >= 0:
+                    opponent_hand = players[winner_index]
+                elif len(tie_players) > 0:
+                    opponent_hand = players[tie_players[0]]
+                else:
+                    opponent_hand = ""
+
+                # Create elimination record (without cooler check for now)
+                elimination = PlayerElimination(
+                    player_index=u256(i),
+                    player_address=player_address,
+                    player_hand=players[i],
+                    opponent_hand=opponent_hand,
+                    board_cards=board_cards,
+                    is_cooler=False,  # Will be set correctly in later steps
+                    hand_rank_player="Unknown",  # Will be set correctly in later steps
+                    hand_rank_opponent="Unknown",  # Will be set correctly in later steps
+                )
+                self.player_eliminations.append(elimination)
 
         # Check if tournament has finished after pot distribution
         self._check_tournament_finished()
