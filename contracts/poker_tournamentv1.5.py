@@ -37,6 +37,13 @@ class PokerTournament(gl.Contract):
     tournament_finished: bool  # Whether the tournament has ended
     tournament_winner_index: u256  # Index of the tournament winner
     set_players: bool  # Whether players have been set (can only be set once)
+    has_cooler: bool  # Whether the last hand had a cooler situation
+    cooler_player_indices: DynArray[
+        u256
+    ]  # Array of player indices who were eliminated in coolers
+    winner_hand_rank: (
+        str  # Hand rank of the winner (e.g., "Pocket Aces", "Flush", "Straight")
+    )
 
     def __init__(self):
         # DynArray are automatically initialized by GenLayer
@@ -46,6 +53,9 @@ class PokerTournament(gl.Contract):
         self.tournament_finished = False
         self.tournament_winner_index = u256(0)
         self.set_players = False
+        self.has_cooler = False
+        self.winner_hand_rank = ""
+        # cooler_player_indices is automatically initialized as DynArray
 
     @gl.public.view
     def get_state(self) -> typing.Any:
@@ -287,6 +297,22 @@ TIE RULES:
 - If multiple players have identical 5-card hands (same ranks, regardless of suits), they tie
 - Example: Player 1 has K♠K♥ and Player 2 has K♦K♣ with board K♠Q♠J♠10♠9♠ - both have King-high flush, it's a tie
 
+COOLER DEFINITION:
+A "cooler" is a situation where:
+1. A losing player had a very strong hand (e.g., pocket Aces, pocket Kings, top pair with top kicker, flush, straight)
+2. The winning player had an even stronger hand
+3. The losing player lost despite having a strong hand that would normally win
+Examples of coolers:
+- Pocket Kings vs Pocket Aces (KK loses to AA)
+- Top pair top kicker vs Two pair or better
+- Flush vs Higher flush
+- Straight vs Higher straight
+- Full house vs Higher full house
+NOT a cooler if:
+- The losing player had a weak hand (e.g., high card, low pair)
+- The winning player had a weak hand
+- Both players had weak hands
+
 CARD NOTATION:
 - Suit symbols: ♠ (spades), ♥ (hearts), ♦ (diamonds), ♣ (clubs)
 - Ranks: A (Ace), K (King), Q (Queen), J (Jack), 10, 9, 8, 7, 6, 5, 4, 3, 2
@@ -299,16 +325,26 @@ Board cards: {board_cards_str}
 
 Analyze each player's best possible 5-card hand by combining their 2 private cards with the 5 community cards.
 Determine which player(s) have the highest-ranking hand.
+Also determine if there was a cooler situation and identify the hand ranks.
 
 Respond in JSON:
 {{
     "winner_index": int, // Index of winning player (0-based), or -1 if there is a tie
-    "tie_players": [int] // Array of all player indices who tied for the win (empty array if no tie, all tied players if winner_index is -1)
+    "tie_players": [int], // Array of all player indices who tied for the win (empty array if no tie, all tied players if winner_index is -1)
+    "winner_hand_rank": str, // Hand rank of the winner (e.g., "Pocket Aces", "Flush", "Straight", "Full House", "Two Pair", "One Pair", "High Card")
+    "has_cooler": bool, // true if there was at least one cooler situation in this hand
+    "cooler_player_indices": [int], // Array of player indices who were eliminated in coolers (can be multiple players, empty array if no coolers)
+    "hand_ranks": [str] // Array of hand ranks for each player in order (e.g., ["Pocket Aces", "Pocket Kings", "Flush"])
 }}
 
 IMPORTANT: 
 - If there is a single winner, set winner_index to that player's index and tie_players to []
 - If there is a tie, set winner_index to -1 and tie_players to an array containing all tied player indices
+- winner_hand_rank should describe the winning hand (e.g., "Pocket Aces", "King-high Flush", "Straight", etc.)
+- has_cooler should be true if at least one losing player had a very strong hand but lost to an even stronger hand
+- cooler_player_indices should be an array containing all player indices who were eliminated in cooler situations (can be multiple players)
+- Multiple players can have coolers in the same hand (e.g., Player 0 with Pocket Kings vs Player 1 with Pocket Aces, and Player 2 with Flush vs Player 1 with Higher Flush)
+- hand_ranks should have one entry per player, describing each player's best hand
 - Your response must be ONLY valid JSON, nothing else.
             """
             result = gl.nondet.exec_prompt(task, response_format="json")
@@ -324,11 +360,26 @@ IMPORTANT:
         # Persist state
         winner_index = result_json.get("winner_index", -1)
         tie_players = result_json.get("tie_players", [])
+        winner_hand_rank = result_json.get("winner_hand_rank", "")
+        has_cooler = result_json.get("has_cooler", False)
+        cooler_player_indices = result_json.get("cooler_player_indices", []) or []
+        hand_ranks = result_json.get("hand_ranks", []) or []
 
         if winner_index >= 0:
             self.hand_winner_index = u256(winner_index)
         else:
             self.hand_winner_index = u256(999999)
+
+        # Store winner hand rank and cooler information
+        self.winner_hand_rank = winner_hand_rank if winner_hand_rank else ""
+        self.has_cooler = has_cooler
+
+        # Reset and store cooler player indices
+        while len(self.cooler_player_indices) > 0:
+            self.cooler_player_indices.pop()
+        for idx in cooler_player_indices:
+            if idx >= 0:
+                self.cooler_player_indices.append(u256(idx))
 
         # Reset tie_players storage array
         while len(self.tie_players) > 0:
@@ -397,16 +448,35 @@ IMPORTANT:
                 else:
                     opponent_hand = ""
 
-                # Create elimination record (without cooler check for now)
+                # Check if this player is in the list of cooler players
+                is_cooler = False
+                if has_cooler and cooler_player_indices and i in cooler_player_indices:
+                    is_cooler = True
+
+                # Get hand ranks from the determine_winner result
+                if hand_ranks and i < len(hand_ranks):
+                    hand_rank_player = hand_ranks[i]
+                else:
+                    hand_rank_player = "Unknown"
+
+                # Get opponent hand rank
+                if winner_index >= 0 and hand_ranks and winner_index < len(hand_ranks):
+                    hand_rank_opponent = hand_ranks[winner_index]
+                elif winner_hand_rank:
+                    hand_rank_opponent = winner_hand_rank
+                else:
+                    hand_rank_opponent = "Unknown"
+
+                # Create elimination record with cooler information
                 elimination = PlayerElimination(
                     player_index=u256(i),
                     player_address=player_address,
                     player_hand=players[i],
                     opponent_hand=opponent_hand,
                     board_cards=board_cards,
-                    is_cooler=False,  # Will be set correctly in later steps
-                    hand_rank_player="Unknown",  # Will be set correctly in later steps
-                    hand_rank_opponent="Unknown",  # Will be set correctly in later steps
+                    is_cooler=is_cooler,
+                    hand_rank_player=hand_rank_player,
+                    hand_rank_opponent=hand_rank_opponent,
                 )
                 self.player_eliminations.append(elimination)
 
