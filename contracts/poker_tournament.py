@@ -173,19 +173,20 @@ class PokerTournament(gl.Contract):
                 f"player_bets length ({len(player_bets)}) must match players length ({len(players)})"
             )
 
+        # Validate board_cards: must be empty (pre-flop) or have exactly 5 cards
+        # Do this early to fail fast before any state changes
+        card_count = self._count_cards(board_cards)
+        if card_count != 0 and card_count != 5:
+            raise Exception(
+                f"Board cards must have exactly 5 cards or be empty (pre-flop). Found {card_count} cards."
+            )
+
         # Calculate pot amount as sum of all bets
         pot_amount = 0
         for bet in player_bets:
             if int(bet) < 0:
                 raise Exception("Player bet cannot be negative")
             pot_amount += int(bet)
-
-        # Validate board_cards: must be empty (pre-flop) or have exactly 5 cards
-        card_count = self._count_cards(board_cards)
-        if card_count != 0 and card_count != 5:
-            raise Exception(
-                f"Board cards must have exactly 5 cards or be empty (pre-flop). Found {card_count} cards."
-            )
 
         # Ensure player_balances array is large enough
         while len(self.player_balances) < len(players):
@@ -302,9 +303,9 @@ IMPORTANT:
         # Clear existing player_hands first
         while len(self.player_hands) > 0:
             self.player_hands.pop()
-        # Add new player hands
-        for hand in players:
-            self.player_hands.append(hand)
+        # Add new player hands - iterate by index to handle DynArray correctly
+        for i in range(len(players)):
+            self.player_hands.append(players[i])
 
         self.board_cards = board_cards
         self.pot = u256(pot_amount)
