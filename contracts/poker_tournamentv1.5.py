@@ -36,7 +36,7 @@ class PokerTournament(gl.Contract):
     last_pot_distribution: DynArray[u256]  # Last pot distribution per player
     tournament_finished: bool  # Whether the tournament has ended
     tournament_winner_index: u256  # Index of the tournament winner
-    set_players: bool  # Whether players have been set (can only be set once)
+    set_players_done: bool  # Whether players have been set (can only be set once)
     has_cooler: bool  # Whether the last hand had a cooler situation
     cooler_player_indices: DynArray[
         u256
@@ -76,6 +76,7 @@ class PokerTournament(gl.Contract):
 
         return {
             "player_balances": balances_list,
+            "player_addresses": list(self.player_addresses),
             "player_hands": list(self.player_hands),
             "board_cards": self.board_cards,
             "pot": int(self.pot),
@@ -104,6 +105,48 @@ class PokerTournament(gl.Contract):
             "is_tie": int(self.hand_winner_index) == 999999,
             "tournament_finished": self.tournament_finished,
             "tournament_winner_index": int(self.tournament_winner_index),
+        }
+
+    @gl.public.view
+    def get_cooler_info(self) -> typing.Any:
+        """
+        Get information about whether there were coolers in the last hand.
+
+        Returns:
+            Dictionary with cooler information:
+            - has_cooler: bool indicating if there was at least one cooler
+            - cooler_player_indices: list of player indices who were eliminated in coolers (can be multiple)
+        """
+        cooler_indices_list = []
+        for i in range(len(self.cooler_player_indices)):
+            cooler_indices_list.append(int(self.cooler_player_indices[i]))
+
+        return {
+            "has_cooler": self.has_cooler,
+            "cooler_player_indices": cooler_indices_list,
+        }
+
+    @gl.public.view
+    def get_winner_info(self) -> typing.Any:
+        """
+        Get information about the winner of the last hand.
+
+        Returns:
+            Dictionary with winner information:
+            - winner_index: int index of the winning player (999999 if tie)
+            - winner_hand_rank: str describing the winning hand (e.g., "Pocket Aces", "Flush")
+            - is_tie: bool indicating if there was a tie
+            - tie_players: list of player indices who tied (empty if no tie)
+        """
+        tie_players_list = []
+        for i in range(len(self.tie_players)):
+            tie_players_list.append(int(self.tie_players[i]))
+
+        return {
+            "winner_index": int(self.hand_winner_index),
+            "winner_hand_rank": self.winner_hand_rank,
+            "is_tie": int(self.hand_winner_index) == 999999,
+            "tie_players": tie_players_list,
         }
 
     def _count_cards(self, cards_str: str) -> int:
@@ -177,7 +220,7 @@ class PokerTournament(gl.Contract):
 
         # Check if tournament has finished after balance update
         self._check_tournament_finished()
-        self.set_players = True
+        self.set_players_done = True
 
         return {
             "player_balances": [int(b) for b in self.player_balances],
@@ -297,6 +340,19 @@ TIE RULES:
 - If multiple players have identical 5-card hands (same ranks, regardless of suits), they tie
 - Example: Player 1 has K♠K♥ and Player 2 has K♦K♣ with board K♠Q♠J♠10♠9♠ - both have King-high flush, it's a tie
 
+HAND RANK FORMAT (CRITICAL - USE EXACTLY THESE FORMATS):
+- Pocket pairs: "Pocket Aces", "Pocket Kings", "Pocket Queens", "Pocket Jacks", "Pocket Tens", "Pocket Nines", etc.
+- Pairs on board: "Pair of Aces", "Pair of Kings", etc.
+- Two Pair: "Two Pair, Aces and Kings", "Two Pair, Queens and Jacks", etc.
+- Three of a Kind: "Three Aces", "Three Kings", etc.
+- Straight: "Straight, Ace-high", "Straight, King-high", etc.
+- Flush: "Flush, Ace-high", "Flush, King-high", etc.
+- Full House: "Full House, Aces over Kings", "Full House, Queens over Jacks", etc.
+- Four of a Kind: "Four Aces", "Four Kings", etc.
+- Straight Flush: "Straight Flush, Ace-high", "Straight Flush, King-high", etc.
+- Royal Flush: "Royal Flush"
+- High Card: "High Card, Ace", "High Card, King", etc.
+
 COOLER DEFINITION:
 A "cooler" is a situation where:
 1. A losing player had a very strong hand (e.g., pocket Aces, pocket Kings, top pair with top kicker, flush, straight)
@@ -327,25 +383,27 @@ Analyze each player's best possible 5-card hand by combining their 2 private car
 Determine which player(s) have the highest-ranking hand.
 Also determine if there was a cooler situation and identify the hand ranks.
 
-Respond in JSON:
+Respond in JSON with EXACTLY this structure (no extra fields, no missing fields):
 {{
     "winner_index": int, // Index of winning player (0-based), or -1 if there is a tie
-    "tie_players": [int], // Array of all player indices who tied for the win (empty array if no tie, all tied players if winner_index is -1)
-    "winner_hand_rank": str, // Hand rank of the winner (e.g., "Pocket Aces", "Flush", "Straight", "Full House", "Two Pair", "One Pair", "High Card")
-    "has_cooler": bool, // true if there was at least one cooler situation in this hand
-    "cooler_player_indices": [int], // Array of player indices who were eliminated in coolers (can be multiple players, empty array if no coolers)
-    "hand_ranks": [str] // Array of hand ranks for each player in order (e.g., ["Pocket Aces", "Pocket Kings", "Flush"])
+    "tie_players": [int], // Array of all player indices who tied for the win (empty array [] if no tie, all tied player indices if winner_index is -1)
+    "winner_hand_rank": str, // Hand rank of the winner using EXACT format from HAND RANK FORMAT section above
+    "has_cooler": bool, // true if there was at least one cooler situation in this hand, false otherwise
+    "cooler_player_indices": [int], // Array of player indices who were eliminated in coolers (empty array [] if no coolers, can be multiple players)
+    "hand_ranks": [str] // Array of hand ranks for each player in order (one entry per player, use EXACT format from HAND RANK FORMAT section above)
 }}
 
-IMPORTANT: 
-- If there is a single winner, set winner_index to that player's index and tie_players to []
-- If there is a tie, set winner_index to -1 and tie_players to an array containing all tied player indices
-- winner_hand_rank should describe the winning hand (e.g., "Pocket Aces", "King-high Flush", "Straight", etc.)
-- has_cooler should be true if at least one losing player had a very strong hand but lost to an even stronger hand
-- cooler_player_indices should be an array containing all player indices who were eliminated in cooler situations (can be multiple players)
-- Multiple players can have coolers in the same hand (e.g., Player 0 with Pocket Kings vs Player 1 with Pocket Aces, and Player 2 with Flush vs Player 1 with Higher Flush)
-- hand_ranks should have one entry per player, describing each player's best hand
-- Your response must be ONLY valid JSON, nothing else.
+CRITICAL REQUIREMENTS:
+- If there is a single winner, set winner_index to that player's index (0-based) and tie_players to []
+- If there is a tie, set winner_index to -1 and tie_players to an array containing ALL tied player indices
+- winner_hand_rank MUST use one of the exact formats from HAND RANK FORMAT section above
+- has_cooler MUST be true or false (boolean, not string)
+- cooler_player_indices MUST be an array (empty [] if no coolers)
+- hand_ranks MUST have exactly one entry per player, in player order (Player 0, Player 1, Player 2, etc.)
+- Each hand_rank entry MUST use one of the exact formats from HAND RANK FORMAT section above
+- Your response must be ONLY valid JSON, no markdown, no code blocks, no explanations, nothing else
+- Do not include any text before or after the JSON
+- Ensure all arrays are properly formatted (use [] for empty arrays, not null or undefined)
             """
             result = gl.nondet.exec_prompt(task, response_format="json")
             return json.dumps(result, sort_keys=True)
@@ -357,13 +415,33 @@ IMPORTANT:
         # Parse the JSON string returned by strict_eq
         result_json = json.loads(result_json_str)
 
-        # Persist state
-        winner_index = result_json.get("winner_index", -1)
+        # Validate required fields exist and normalize types
+        if "winner_index" not in result_json:
+            raise Exception("Missing winner_index in LLM response")
+        if "tie_players" not in result_json:
+            result_json["tie_players"] = []
+        if "winner_hand_rank" not in result_json:
+            result_json["winner_hand_rank"] = ""
+        if "has_cooler" not in result_json:
+            result_json["has_cooler"] = False
+        if "cooler_player_indices" not in result_json:
+            result_json["cooler_player_indices"] = []
+        if "hand_ranks" not in result_json:
+            result_json["hand_ranks"] = []
+
+        # Normalize types to ensure consistency
+        winner_index = int(result_json.get("winner_index", -1))
         tie_players = result_json.get("tie_players", [])
-        winner_hand_rank = result_json.get("winner_hand_rank", "")
-        has_cooler = result_json.get("has_cooler", False)
-        cooler_player_indices = result_json.get("cooler_player_indices", []) or []
-        hand_ranks = result_json.get("hand_ranks", []) or []
+        if not isinstance(tie_players, list):
+            tie_players = []
+        winner_hand_rank = str(result_json.get("winner_hand_rank", ""))
+        has_cooler = bool(result_json.get("has_cooler", False))
+        cooler_player_indices = result_json.get("cooler_player_indices", [])
+        if not isinstance(cooler_player_indices, list):
+            cooler_player_indices = []
+        hand_ranks = result_json.get("hand_ranks", [])
+        if not isinstance(hand_ranks, list):
+            hand_ranks = []
 
         if winner_index >= 0:
             self.hand_winner_index = u256(winner_index)
