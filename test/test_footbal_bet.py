@@ -1,6 +1,11 @@
 from gltest import get_contract_factory, default_account
 from gltest.helpers import load_fixture
-from gltest.assertions import tx_execution_succeeded
+import gltest.assertions
+import gltest.glchain.contract
+from test.assertions_fix import (
+    tx_execution_succeeded,
+    tx_execution_failed as fixed_tx_execution_failed,
+)
 from test.football_bets_get_contract_schema_for_code import (
     test_football_bets_win_resolved,
     test_football_bets_win_unresolved,
@@ -9,6 +14,12 @@ from test.football_bets_get_contract_schema_for_code import (
     test_football_bets_unsuccess_unresolved,
     test_football_bets_unsuccess_resolved,
 )
+
+# Patch the assertions to handle leader_receipt as list (can be list or dict)
+gltest.assertions.tx_execution_succeeded = tx_execution_succeeded
+gltest.assertions.tx_execution_failed = fixed_tx_execution_failed
+# Also patch in the contract module since it imports the function directly
+gltest.glchain.contract.tx_execution_failed = fixed_tx_execution_failed
 
 
 def deploy_contract():
