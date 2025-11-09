@@ -165,20 +165,23 @@ class PokerTournament(gl.Contract):
             board_cards: The 5 community cards (or empty string for pre-flop)
             player_bets: Array of bets made by each player (must match players length)
         """
+        # Validate board_cards FIRST - before any other operations
+        # This ensures we fail fast if board_cards is invalid
+        if board_cards is None:
+            board_cards = ""
+
+        card_count = self._count_cards(board_cards)
+        if card_count != 0 and card_count != 5:
+            raise Exception(
+                f"Board cards must have exactly 5 cards or be empty (pre-flop). Found {card_count} cards."
+            )
+
         if len(players) < 2:
             raise Exception("At least 2 players are required")
 
         if len(player_bets) != len(players):
             raise Exception(
                 f"player_bets length ({len(player_bets)}) must match players length ({len(players)})"
-            )
-
-        # Validate board_cards: must be empty (pre-flop) or have exactly 5 cards
-        # Do this early to fail fast before any state changes
-        card_count = self._count_cards(board_cards)
-        if card_count != 0 and card_count != 5:
-            raise Exception(
-                f"Board cards must have exactly 5 cards or be empty (pre-flop). Found {card_count} cards."
             )
 
         # Calculate pot amount as sum of all bets
