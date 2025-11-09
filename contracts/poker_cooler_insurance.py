@@ -1,4 +1,5 @@
-# { "Runner": "py-genlayer:test" }
+# v0.1.0
+# { "Depends": "py-genlayer:latest" }
 
 import json
 from dataclasses import dataclass
@@ -31,7 +32,24 @@ class PokerCoolerInsurance(gl.Contract):
         self.total_premiums = 0
         self.total_payouts = 0
 
-    def _get_tournament_buy_in(self, tournament_url: str) -> u256:
+    def _policy_to_dict(self, policy: InsurancePolicy) -> dict:
+        """Convert InsurancePolicy dataclass to dictionary with u256 values as int."""
+        return {
+            "id": policy.id,
+            "player_address": policy.player_address.as_hex,
+            "tournament_id": policy.tournament_id,
+            "tournament_url": policy.tournament_url,
+            "player_id": policy.player_id,
+            "tournament_buy_in": int(policy.tournament_buy_in),
+            "premium_paid": int(policy.premium_paid),
+            "has_claimed": policy.has_claimed,
+            "claim_resolved": policy.claim_resolved,
+            "is_valid_cooler": policy.is_valid_cooler,
+            "payout_amount": int(policy.payout_amount),
+            "registration_date": policy.registration_date,
+        }
+
+    def _get_tournament_buy_in(self, tournament_url: str) -> int:
         def extract_buy_in() -> str:
             web_data = gl.nondet.web.render(tournament_url, mode="text")
 
@@ -215,33 +233,39 @@ This result should be perfectly parsable by a JSON parser without errors.
 
     @gl.public.view
     def get_policies(self) -> dict:
-        return {k.as_hex: v for k, v in self.policies.items()}
+        result = {}
+        for address, policies_map in self.policies.items():
+            result[address.as_hex] = {
+                k: self._policy_to_dict(v) for k, v in policies_map.items()
+            }
+        return result
 
     @gl.public.view
     def get_player_policies(self, player_address: str) -> dict:
         address = Address(player_address)
         if address not in self.policies:
             return {}
-        return {k: v for k, v in self.policies[address].items()}
+        return {k: self._policy_to_dict(v) for k, v in self.policies[address].items()}
 
     @gl.public.view
-    def get_policy(self, policy_id: str) -> InsurancePolicy:
+    def get_policy(self, policy_id: str) -> dict:
         sender_address = gl.message.sender_address
         if (
             sender_address not in self.policies
             or policy_id not in self.policies[sender_address]
         ):
             raise Exception("Insurance policy not found")
-        return self.policies[sender_address][policy_id]
+        policy = self.policies[sender_address][policy_id]
+        return self._policy_to_dict(policy)
 
     @gl.public.view
-    def get_total_premiums(self) -> u256:
+    def get_total_premiums(self) -> int:
         return self.total_premiums
 
     @gl.public.view
-    def get_total_payouts(self) -> u256:
+    def get_total_payouts(self) -> int:
         return self.total_payouts
 
     @gl.public.view
-    def get_contract_balance(self) -> u256:
+    def get_contract_balance(self) -> int:
         return self.total_premiums - self.total_payouts

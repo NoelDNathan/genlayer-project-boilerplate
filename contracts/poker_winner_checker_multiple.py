@@ -34,7 +34,6 @@ class PokerWinnerChecker(gl.Contract):
             board_cards (str): The board cards in card notation.
         """
         self.has_resolved = False
-        self.players = DynArray[Player]()
         self.board_cards = board_cards
 
     @gl.public.write

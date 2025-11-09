@@ -11,7 +11,6 @@ class PokerWinnerCheckerMultiple(gl.Contract):
     player_hands: DynArray[str]  # Array of all player hands
     board_cards: str
     winner_index: u256  # Index of the winner in the array
-    hand_ranks: DynArray[str]  # Array of hand ranks for each player
     tie_players: DynArray[u256]  # Array of player indices in case of tie
 
     def __init__(self, board_cards: str = ""):
@@ -26,7 +25,6 @@ class PokerWinnerCheckerMultiple(gl.Contract):
             player_hands (DynArray[str]): Array of player hands in card notation.
             board_cards (str): The board cards in card notation.
             winner_index (u256): Index of the winning player (0-based), or 999999 if tie.
-            hand_ranks (DynArray[str]): Array of hand ranks for each player.
             tie_players (DynArray[u256]): Array of player indices in case of tie.
         """
         self.has_resolved = False
@@ -68,11 +66,19 @@ class PokerWinnerCheckerMultiple(gl.Contract):
             dict: Contains winner information, hand ranks, and tie information.
         """
 
-        def determine_winner() -> str:
-            hands_list = []
-            for i in range(len(self.player_hands)):
-                hands_list.append(f"Player {i}: {self.player_hands[i]}")
+        if self.has_resolved:
+            return "Already resolved"
 
+        if len(self.player_hands) < 2:
+            raise Exception("At least 2 players are required")
+
+        # Read all data from storage BEFORE entering nondet context
+        hands_list = []
+        for i in range(len(self.player_hands)):
+            hands_list.append(f"Player {i}: {self.player_hands[i]}")
+        board_cards_str = self.board_cards if self.board_cards else "None"
+
+        def determine_winner(hands_list: list[str], board_cards_str: str) -> str:
             task = f"""
 Determine who wins in this poker hand texas hold'em situation with multiple players.
 
@@ -81,12 +87,11 @@ Examples: ♠A♠A (pocket Aces of spades), ♥K♥K (pocket Kings of hearts), �
 
 Player hands:
 {chr(10).join(hands_list)}
-Board cards: {self.board_cards if self.board_cards else "None"}
+Board cards: {board_cards_str}
 
 Respond in JSON:
 {{
     "winner_index": int, // Index of winning player (0-based), or -1 if tie
-    "hand_ranks": [str], // Array of hand ranks for each player in order
     "tie_players": [int] // Array of player indices if there's a tie (empty if no tie)
 }}
 It is mandatory that you respond only using the JSON format above,
@@ -95,18 +100,13 @@ nothing else. Your output must be only JSON.
             result = gl.nondet.exec_prompt(task, response_format="json")
             return json.dumps(result, sort_keys=True)
 
-        if self.has_resolved:
-            return "Already resolved"
-
-        if len(self.player_hands) < 2:
-            raise Exception("At least 2 players are required")
-
-        result_json = gl.eq_principle.strict_eq(determine_winner)
+        result_json = gl.eq_principle.strict_eq(
+            lambda: determine_winner(hands_list, board_cards_str)
+        )
 
         self.has_resolved = True
 
         winner_index = result_json.get("winner_index", -1)
-        hand_ranks = result_json.get("hand_ranks", [])
         tie_players = result_json.get("tie_players", [])
 
         # Store winner index (use -1 to represent tie, but store as u256)
@@ -117,13 +117,6 @@ nothing else. Your output must be only JSON.
             # Since u256 can't be negative, we'll use a large number to represent tie
             self.winner_index = u256(999999)  # Special value for tie
 
-        # Clear and populate hand_ranks array
-        # Since calculate_winner can only be called once, we can safely clear and repopulate
-        while len(self.hand_ranks) > 0:
-            self.hand_ranks.pop()
-        for rank in hand_ranks:
-            self.hand_ranks.append(rank)
-
         # Clear and populate tie_players array
         while len(self.tie_players) > 0:
             self.tie_players.pop()
@@ -132,7 +125,6 @@ nothing else. Your output must be only JSON.
 
         return {
             "winner_index": winner_index,
-            "hand_ranks": hand_ranks,
             "tie_players": tie_players,
             "is_tie": winner_index < 0,
         }
@@ -147,9 +139,6 @@ nothing else. Your output must be only JSON.
         """
         players_data = []
         for i in range(len(self.player_hands)):
-            hand_rank = ""
-            if i < len(self.hand_ranks):
-                hand_rank = self.hand_ranks[i]
 
             is_winner = False
             if self.winner_index < u256(999999):  # Not a tie
@@ -165,7 +154,6 @@ nothing else. Your output must be only JSON.
                 {
                     "index": i,
                     "hand": self.player_hands[i],
-                    "hand_rank": hand_rank,
                     "is_winner": is_winner,
                 }
             )
@@ -198,13 +186,7 @@ nothing else. Your output must be only JSON.
         """
         players_data = []
         for i in range(len(self.player_hands)):
-            hand_rank = ""
-            if i < len(self.hand_ranks):
-                hand_rank = self.hand_ranks[i]
-
-            players_data.append(
-                {"index": i, "hand": self.player_hands[i], "hand_rank": hand_rank}
-            )
+            players_data.append({"index": i, "hand": self.player_hands[i]})
 
         return {
             "players": players_data,
