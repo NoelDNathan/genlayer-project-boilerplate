@@ -1,4 +1,4 @@
-# v0.1.0 #no cambies esto, es la version del compilador
+# v0.1.0
 # { "Depends": "py-genlayer:latest" }
 
 import json
@@ -11,13 +11,12 @@ from genlayer import *
 @dataclass
 class PlayerElimination:
     player_index: u256
-    player_address: Address  # Address of the eliminated player
+    player_address: Address
     player_hand: str
-    opponent_hand: str  # The hand of the opponent that beat them
+    opponent_hand: str
     board_cards: str
-    is_cooler: bool
-    hand_rank_player: str  # e.g., "Pocket Aces", "Flush", "Straight"
-    hand_rank_opponent: str  # e.g., "Pocket Aces", "Flush", "Straight"
+    hand_rank_player: str
+    hand_rank_opponent: str
 
 
 class PokerTournament(gl.Contract):
@@ -28,6 +27,9 @@ class PokerTournament(gl.Contract):
         Address
     ]  # Array of player addresses (indexed by player position)
     player_hands: DynArray[str]  # Array of all player hands
+    player_eliminations: TreeMap[
+        Address, PlayerElimination
+    ]  # Map of player eliminations by address
     board_cards: str
     pot: u256  # Total pot amount
     hand_winner_index: u256  # Index of the winner of the last hand/round
@@ -35,12 +37,8 @@ class PokerTournament(gl.Contract):
     last_pot_distribution: DynArray[u256]  # Last pot distribution per player
     tournament_finished: bool  # Whether the tournament has ended
     tournament_winner_index: u256  # Index of the tournament winner
-    player_eliminations: DynArray[PlayerElimination]  # Array of player eliminations
-    players_set: bool  # Whether players have been set (can only be set once)
-    has_cooler: bool  # Whether the last hand had a cooler situation
-    cooler_player_indices: DynArray[
-        u256
-    ]  # Array of player indices who were eliminated in coolers
+    set_players_done: bool  # Whether players have been set (can only be set once)
+
     winner_hand_rank: (
         str  # Hand rank of the winner (e.g., "Pocket Aces", "Flush", "Straight")
     )
@@ -52,10 +50,8 @@ class PokerTournament(gl.Contract):
         self.pot = u256(0)
         self.tournament_finished = False
         self.tournament_winner_index = u256(0)
-        self.players_set = False
-        self.has_cooler = False
+        self.set_players = False
         self.winner_hand_rank = ""
-        # cooler_player_indices is automatically initialized as DynArray
 
     @gl.public.view
     def get_state(self) -> typing.Any:
@@ -74,13 +70,9 @@ class PokerTournament(gl.Contract):
         for i in range(len(self.last_pot_distribution)):
             last_distribution_list.append(int(self.last_pot_distribution[i]))
 
-        player_addresses_list = []
-        for i in range(len(self.player_addresses)):
-            player_addresses_list.append(self.player_addresses[i].as_hex)
-
         return {
             "player_balances": balances_list,
-            "player_addresses": player_addresses_list,
+            "player_addresses": list(self.player_addresses),
             "player_hands": list(self.player_hands),
             "board_cards": self.board_cards,
             "pot": int(self.pot),
@@ -91,6 +83,35 @@ class PokerTournament(gl.Contract):
             "tournament_finished": self.tournament_finished,
             "tournament_winner_index": int(self.tournament_winner_index),
         }
+
+    @gl.public.view
+    def get_player_eliminations(self) -> typing.Any:
+        """
+        Get the list of player eliminations.
+        """
+        eliminations_list = []
+        for address in self.player_eliminations:
+            eliminations_list.append(self.player_eliminations[address])
+        return {
+            "player_eliminations": eliminations_list,
+        }
+
+    @gl.public.view
+    def get_player_elimination(self, player_address: str) -> typing.Any:
+        """
+        Get the elimination record for a specific player.
+        """
+        address = Address(player_address)
+        if address in self.player_eliminations:
+            elimination = self.player_eliminations[address]
+            return {
+                "player_index": int(elimination.player_index),
+                "player_address": elimination.player_address.as_hex,
+                "player_hand": elimination.player_hand,
+                "opponent_hand": elimination.opponent_hand,
+                "board_cards": elimination.board_cards,
+            }
+        return {}
 
     @gl.public.view
     def get_last_winner(self) -> typing.Any:
@@ -109,6 +130,85 @@ class PokerTournament(gl.Contract):
             "is_tie": int(self.hand_winner_index) == 999999,
             "tournament_finished": self.tournament_finished,
             "tournament_winner_index": int(self.tournament_winner_index),
+        }
+
+    @gl.public.view
+    def get_winner_info(self) -> typing.Any:
+        """
+        Get information about the winner of the last hand.
+
+        Returns:
+            Dictionary with winner information:
+            - winner_index: int index of the winning player (999999 if tie)
+            - winner_hand_rank: str describing the winning hand (e.g., "Pocket Aces", "Flush")
+            - is_tie: bool indicating if there was a tie
+            - tie_players: list of player indices who tied (empty if no tie)
+        """
+        tie_players_list = []
+        for i in range(len(self.tie_players)):
+            tie_players_list.append(int(self.tie_players[i]))
+
+        return {
+            "winner_index": int(self.hand_winner_index),
+            "winner_hand_rank": self.winner_hand_rank,
+            "is_tie": int(self.hand_winner_index) == 999999,
+            "tie_players": tie_players_list,
+        }
+
+    @gl.public.view
+    def get_tournament_winner_address(self) -> typing.Any:
+        """
+        Get the address of the tournament winner.
+
+        Returns:
+            Dictionary with tournament winner address:
+            - winner_address: Address of the tournament winner, or zero address (0x0000000000000000000000000000000000000000) if tournament has not finished
+            - tournament_finished: bool indicating if the tournament has finished
+        """
+        zero_address = Address("0x0000000000000000000000000000000000000000")
+
+        if not self.tournament_finished:
+            return {
+                "winner_address": zero_address,
+                "tournament_finished": False,
+            }
+
+        # Tournament has finished, get the winner's address
+        winner_index = int(self.tournament_winner_index)
+
+        # Check if winner index is valid and has an address
+        if winner_index >= 0 and winner_index < len(self.player_addresses):
+            winner_address = self.player_addresses[winner_index]
+        else:
+            # Invalid winner index, return zero address
+            winner_address = zero_address
+
+        return {
+            "winner_address": winner_address,
+            "tournament_finished": True,
+        }
+
+    @gl.public.view
+    def get_tournament_winner_hand_rank(self) -> typing.Any:
+        """
+        Get the hand rank with which the tournament was won.
+
+        Returns:
+            Dictionary with tournament winner hand rank:
+            - winner_hand_rank: str describing the hand rank with which the tournament was won (e.g., "Pocket Aces", "Flush")
+            - tournament_finished: bool indicating if the tournament has finished
+            - Returns empty string for winner_hand_rank if tournament has not finished
+        """
+        if not self.tournament_finished:
+            return {
+                "winner_hand_rank": "",
+                "tournament_finished": False,
+            }
+
+        # Tournament has finished, return the hand rank of the last winning hand
+        return {
+            "winner_hand_rank": self.winner_hand_rank if self.winner_hand_rank else "",
+            "tournament_finished": True,
         }
 
     def _count_cards(self, cards_str: str) -> int:
@@ -151,131 +251,41 @@ class PokerTournament(gl.Contract):
             # Multiple players with balance, or only one player registered (tournament not started)
             self.tournament_finished = False
 
-    def _create_elimination_record(
-        self,
-        player_index: int,
-        player_hand: str,
-        board_cards: str,
-        winner_index: int,
-        tie_players: list,
-        all_players: DynArray[str],
-        has_cooler: bool = False,
-        cooler_player_indices: list = None,
-        hand_ranks: list = None,
-        winner_hand_rank: str = "",
-    ) -> PlayerElimination:
-        """
-        Create an elimination record using cooler information from determine_winner.
-        This avoids nested strict_eq calls by using the cooler info already detected.
-        """
-        # Determine opponent hand(s) - the winner(s)
-        if winner_index >= 0:
-            opponent_hand = all_players[winner_index]
-        elif len(tie_players) > 0:
-            # If tie, use first tied player as opponent (or could use all)
-            opponent_hand = all_players[tie_players[0]]
-        else:
-            # Edge case - shouldn't happen
-            opponent_hand = ""
-
-        # Get player address
-        player_address = (
-            self.player_addresses[player_index]
-            if player_index < len(self.player_addresses)
-            else Address("0x0000000000000000000000000000000000000000")
-        )
-
-        # Use cooler information from determine_winner (already detected in the same prompt)
-        # Check if this player is in the list of cooler players
-        if cooler_player_indices is None:
-            cooler_player_indices = []
-        if (
-            has_cooler
-            and cooler_player_indices
-            and player_index in cooler_player_indices
-        ):
-            is_cooler = True
-        else:
-            is_cooler = False
-
-        # Get hand ranks from the determine_winner result
-        if hand_ranks and player_index < len(hand_ranks):
-            hand_rank_player = hand_ranks[player_index]
-        else:
-            hand_rank_player = "Unknown"
-
-        # Get opponent hand rank
-        if winner_index >= 0 and hand_ranks and winner_index < len(hand_ranks):
-            hand_rank_opponent = hand_ranks[winner_index]
-        elif winner_hand_rank:
-            hand_rank_opponent = winner_hand_rank
-        else:
-            hand_rank_opponent = "Unknown"
-
-        return PlayerElimination(
-            player_index=u256(player_index),
-            player_address=player_address,
-            player_hand=player_hand,
-            opponent_hand=opponent_hand,
-            board_cards=board_cards,
-            is_cooler=is_cooler,
-            hand_rank_player=hand_rank_player,
-            hand_rank_opponent=hand_rank_opponent,
-        )
-
     @gl.public.write
     def set_players(
-        self, balance_list: DynArray[int], player_addresses: DynArray[str]
+        self, balances: DynArray[int], addresses: DynArray[str]
     ) -> typing.Any:
         """
-        Set the players with their balances and addresses.
-        This can only be called once. Once players are set, they cannot be modified.
+        Set the balances for all players.
 
         Args:
-            balance_list: Array of balances for each player (must be >= 0 for each)
-            player_addresses: Array of player addresses as hex strings (must match balance_list length)
+            balances: Array of balances for each player (must be >= 0 for each)
         """
-        if self.players_set:
-            raise Exception("Players have already been set and cannot be modified")
-
-        if len(balance_list) != len(player_addresses):
-            raise Exception(
-                f"balance_list length ({len(balance_list)}) must match player_addresses length ({len(player_addresses)})"
-            )
-
         # Validate all balances are non-negative
-        for i, balance in enumerate(balance_list):
+        for i, balance in enumerate(balances):
             if balance < 0:
                 raise Exception(f"Balance for player {i} cannot be negative")
 
-        # Validate addresses
-        for i, address_str in enumerate(player_addresses):
-            try:
-                Address(address_str)
-            except Exception:
-                raise Exception(f"Invalid address for player {i}: {address_str}")
-
-        # Clear existing balances and addresses
+        # Clear existing balances
         while len(self.player_balances) > 0:
             self.player_balances.pop()
+
+        # Set new balances
+        for balance in balances:
+            self.player_balances.append(u256(balance))
+
         while len(self.player_addresses) > 0:
             self.player_addresses.pop()
 
-        # Set new balances and addresses
-        for balance in balance_list:
-            self.player_balances.append(u256(balance))
-        for address_str in player_addresses:
-            self.player_addresses.append(Address(address_str))
-
-        # Mark players as set (cannot be modified after this)
-        self.players_set = True
+        for address in addresses:
+            self.player_addresses.append(Address(address))
 
         # Check if tournament has finished after balance update
         self._check_tournament_finished()
+        self.set_players_done = True
 
         return {
             "player_balances": [int(b) for b in self.player_balances],
-            "player_addresses": [addr.as_hex for addr in self.player_addresses],
             "tournament_finished": self.tournament_finished,
             "tournament_winner_index": (
                 int(self.tournament_winner_index) if self.tournament_finished else -1
@@ -293,18 +303,12 @@ class PokerTournament(gl.Contract):
         Calculate winners from the provided players and board, update player balances based on bets and pot distribution.
         This replaces the stored player_hands with 'players', sets winner/tie state, and distributes the pot.
         The pot amount is automatically calculated as the sum of all player_bets.
-        Cannot be called if the tournament has already finished.
 
         Args:
             players: Array of player hands (each player has 2 cards)
             board_cards: The 5 community cards (or empty string for pre-flop)
             player_bets: Array of bets made by each player (must match players length)
         """
-        if self.tournament_finished:
-            raise Exception(
-                "Tournament has already finished. Cannot calculate winners."
-            )
-
         # Validate board_cards FIRST - before any other operations
         # This ensures we fail fast if board_cards is invalid
         if board_cards is None:
@@ -331,14 +335,9 @@ class PokerTournament(gl.Contract):
                 raise Exception("Player bet cannot be negative")
             pot_amount += int(bet)
 
-        # Ensure player_balances and player_addresses arrays are large enough
+        # Ensure player_balances array is large enough
         while len(self.player_balances) < len(players):
             self.player_balances.append(u256(0))
-        while len(self.player_addresses) < len(players):
-            # Use zero address as placeholder if address not set
-            self.player_addresses.append(
-                Address("0x0000000000000000000000000000000000000000")
-            )
 
         # Save previous balances BEFORE deducting bets (to detect eliminations)
         previous_balances = []
@@ -403,21 +402,20 @@ TIE RULES:
 - If multiple players have identical 5-card hands (same ranks, regardless of suits), they tie
 - Example: Player 1 has K♠K♥ and Player 2 has K♦K♣ with board K♠Q♠J♠10♠9♠ - both have King-high flush, it's a tie
 
-COOLER DEFINITION:
-A "cooler" is a situation where:
-1. A losing player had a very strong hand (e.g., pocket Aces, pocket Kings, top pair with top kicker, flush, straight)
-2. The winning player had an even stronger hand
-3. The losing player lost despite having a strong hand that would normally win
-Examples of coolers:
-- Pocket Kings vs Pocket Aces (KK loses to AA)
-- Top pair top kicker vs Two pair or better
-- Flush vs Higher flush
-- Straight vs Higher straight
-- Full house vs Higher full house
-NOT a cooler if:
-- The losing player had a weak hand (e.g., high card, low pair)
-- The winning player had a weak hand
-- Both players had weak hands
+HAND RANK FORMAT (CRITICAL - USE EXACTLY THESE FORMATS):
+- Pocket pairs: "Pocket Aces", "Pocket Kings", "Pocket Queens", "Pocket Jacks", "Pocket Tens", "Pocket Nines", etc.
+- Pairs on board: "Pair of Aces", "Pair of Kings", etc.
+- Two Pair: "Two Pair, Aces and Kings", "Two Pair, Queens and Jacks", etc.
+- Three of a Kind: "Three Aces", "Three Kings", etc.
+- Straight: "Straight, Ace-high", "Straight, King-high", etc.
+- Flush: "Flush, Ace-high", "Flush, King-high", etc.
+- Full House: "Full House, Aces over Kings", "Full House, Queens over Jacks", etc.
+- Four of a Kind: "Four Aces", "Four Kings", etc.
+- Straight Flush: "Straight Flush, Ace-high", "Straight Flush, King-high", etc.
+- Royal Flush: "Royal Flush"
+- High Card: "High Card, Ace", "High Card, King", etc.
+
+
 
 CARD NOTATION:
 - Suit symbols: ♠ (spades), ♥ (hearts), ♦ (diamonds), ♣ (clubs)
@@ -431,27 +429,24 @@ Board cards: {board_cards_str}
 
 Analyze each player's best possible 5-card hand by combining their 2 private cards with the 5 community cards.
 Determine which player(s) have the highest-ranking hand.
-Also determine if there was a cooler situation and identify the hand ranks.
 
-Respond in JSON:
+Respond in JSON with EXACTLY this structure (no extra fields, no missing fields):
 {{
     "winner_index": int, // Index of winning player (0-based), or -1 if there is a tie
-    "tie_players": [int], // Array of all player indices who tied for the win (empty array if no tie, all tied players if winner_index is -1)
-    "winner_hand_rank": str, // Hand rank of the winner (e.g., "Pocket Aces", "Flush", "Straight", "Full House", "Two Pair", "One Pair", "High Card")
-    "has_cooler": bool, // true if there was at least one cooler situation in this hand
-    "cooler_player_indices": [int], // Array of player indices who were eliminated in coolers (can be multiple players, empty array if no coolers)
-    "hand_ranks": [str] // Array of hand ranks for each player in order (e.g., ["Pocket Aces", "Pocket Kings", "Flush"])
+    "tie_players": [int], // Array of all player indices who tied for the win (empty array [] if no tie, all tied player indices if winner_index is -1)
+    "winner_hand_rank": str, // Hand rank of the winner using EXACT format from HAND RANK FORMAT section above
+    "hand_ranks": [str] // Array of hand ranks for each player in order (one entry per player, use EXACT format from HAND RANK FORMAT section above)
 }}
 
-IMPORTANT: 
-- If there is a single winner, set winner_index to that player's index and tie_players to []
-- If there is a tie, set winner_index to -1 and tie_players to an array containing all tied player indices
-- winner_hand_rank should describe the winning hand (e.g., "Pocket Aces", "King-high Flush", "Straight", etc.)
-- has_cooler should be true if at least one losing player had a very strong hand but lost to an even stronger hand
-- cooler_player_indices should be an array containing all player indices who were eliminated in cooler situations (can be multiple players)
-- Multiple players can have coolers in the same hand (e.g., Player 0 with Pocket Kings vs Player 1 with Pocket Aces, and Player 2 with Flush vs Player 1 with Higher Flush)
-- hand_ranks should have one entry per player, describing each player's best hand
-- Your response must be ONLY valid JSON, nothing else.
+CRITICAL REQUIREMENTS:
+- If there is a single winner, set winner_index to that player's index (0-based) and tie_players to []
+- If there is a tie, set winner_index to -1 and tie_players to an array containing ALL tied player indices
+- winner_hand_rank MUST use one of the exact formats from HAND RANK FORMAT section above
+- hand_ranks MUST have exactly one entry per player, in player order (Player 0, Player 1, Player 2, etc.)
+- Each hand_rank entry MUST use one of the exact formats from HAND RANK FORMAT section above
+- Your response must be ONLY valid JSON, no markdown, no code blocks, no explanations, nothing else
+- Do not include any text before or after the JSON
+- Ensure all arrays are properly formatted (use [] for empty arrays, not null or undefined)
             """
             result = gl.nondet.exec_prompt(task, response_format="json")
             return json.dumps(result, sort_keys=True)
@@ -463,29 +458,33 @@ IMPORTANT:
         # Parse the JSON string returned by strict_eq
         result_json = json.loads(result_json_str)
 
-        # Persist state
-        winner_index = result_json.get("winner_index", -1)
+        # Validate required fields exist and normalize types
+        if "winner_index" not in result_json:
+            raise Exception("Missing winner_index in LLM response")
+        if "tie_players" not in result_json:
+            result_json["tie_players"] = []
+        if "winner_hand_rank" not in result_json:
+            result_json["winner_hand_rank"] = ""
+        if "hand_ranks" not in result_json:
+            result_json["hand_ranks"] = []
+
+        # Normalize types to ensure consistency
+        winner_index = int(result_json.get("winner_index", -1))
         tie_players = result_json.get("tie_players", [])
-        winner_hand_rank = result_json.get("winner_hand_rank", "")
-        has_cooler = result_json.get("has_cooler", False)
-        cooler_player_indices = result_json.get("cooler_player_indices", []) or []
-        hand_ranks = result_json.get("hand_ranks", []) or []
+        if not isinstance(tie_players, list):
+            tie_players = []
+        winner_hand_rank = str(result_json.get("winner_hand_rank", ""))
+        hand_ranks = result_json.get("hand_ranks", [])
+        if not isinstance(hand_ranks, list):
+            hand_ranks = []
 
         if winner_index >= 0:
             self.hand_winner_index = u256(winner_index)
         else:
             self.hand_winner_index = u256(999999)
 
-        # Store winner hand rank and cooler information
+        # Store winner hand rank
         self.winner_hand_rank = winner_hand_rank if winner_hand_rank else ""
-        self.has_cooler = has_cooler
-
-        # Reset and store cooler player indices
-        while len(self.cooler_player_indices) > 0:
-            self.cooler_player_indices.pop()
-        for idx in cooler_player_indices:
-            if idx >= 0:
-                self.cooler_player_indices.append(u256(idx))
 
         # Reset tie_players storage array
         while len(self.tie_players) > 0:
@@ -531,8 +530,10 @@ IMPORTANT:
                 self.player_balances[tied_idx] = u256(current_balance + amount)
                 self.last_pot_distribution[tied_idx] = u256(amount)
 
+        # Pre-create zero address to avoid creating it multiple times in the loop
+        zero_address = Address("0x0000000000000000000000000000000000000000")
+
         # Track player eliminations (balance went from > 0 to == 0)
-        # Create elimination records directly to avoid any potential issues with method calls after strict_eq
         for i in range(len(players)):
             previous_balance = previous_balances[i]
             current_balance = int(self.player_balances[i])
@@ -540,7 +541,11 @@ IMPORTANT:
             # Player was eliminated if they had balance before and now have 0
             if previous_balance > 0 and current_balance == 0:
                 # Player was eliminated in this hand
-                # Create elimination record directly using cooler information from determine_winner
+                # Get player address - reuse existing or use pre-created zero address
+                if i < len(self.player_addresses):
+                    player_address = self.player_addresses[i]
+                else:
+                    player_address = zero_address
 
                 # Determine opponent hand(s) - the winner(s)
                 if winner_index >= 0:
@@ -549,18 +554,6 @@ IMPORTANT:
                     opponent_hand = players[tie_players[0]]
                 else:
                     opponent_hand = ""
-
-                # Get player address
-                player_address = (
-                    self.player_addresses[i]
-                    if i < len(self.player_addresses)
-                    else Address("0x0000000000000000000000000000000000000000")
-                )
-
-                # Check if this player is in the list of cooler players
-                is_cooler = False
-                if has_cooler and cooler_player_indices and i in cooler_player_indices:
-                    is_cooler = True
 
                 # Get hand ranks from the determine_winner result
                 if hand_ranks and i < len(hand_ranks):
@@ -576,18 +569,18 @@ IMPORTANT:
                 else:
                     hand_rank_opponent = "Unknown"
 
-                # Create elimination record directly
-                elimination = PlayerElimination(
-                    player_index=u256(i),
-                    player_address=player_address,
-                    player_hand=players[i],
-                    opponent_hand=opponent_hand,
-                    board_cards=board_cards,
-                    is_cooler=is_cooler,
-                    hand_rank_player=hand_rank_player,
-                    hand_rank_opponent=hand_rank_opponent,
-                )
-                self.player_eliminations.append(elimination)
+                # Create elimination record (only if player hasn't been eliminated before)
+                if player_address not in self.player_eliminations:
+                    elimination = PlayerElimination(
+                        player_index=u256(i),
+                        player_address=player_address,
+                        player_hand=players[i],
+                        opponent_hand=opponent_hand,
+                        board_cards=board_cards,
+                        hand_rank_player=hand_rank_player,
+                        hand_rank_opponent=hand_rank_opponent,
+                    )
+                    self.player_eliminations[player_address] = elimination
 
         # Check if tournament has finished after pot distribution
         self._check_tournament_finished()
@@ -602,95 +595,4 @@ IMPORTANT:
             "tournament_winner_index": (
                 int(self.tournament_winner_index) if self.tournament_finished else -1
             ),
-        }
-
-    @gl.public.view
-    def get_player_eliminations(self, player_address: str) -> typing.Any:
-        """
-        Get all elimination records for a specific player.
-
-        Args:
-            player_address: The address of the player to get eliminations for (as hex string)
-        """
-        address = Address(player_address)
-        eliminations = []
-        for i in range(len(self.player_eliminations)):
-            elim = self.player_eliminations[i]
-            if elim.player_address == address:
-                eliminations.append(
-                    {
-                        "player_index": int(elim.player_index),
-                        "player_address": elim.player_address.as_hex,
-                        "player_hand": elim.player_hand,
-                        "opponent_hand": elim.opponent_hand,
-                        "board_cards": elim.board_cards,
-                        "is_cooler": elim.is_cooler,
-                        "hand_rank_player": elim.hand_rank_player,
-                        "hand_rank_opponent": elim.hand_rank_opponent,
-                    }
-                )
-        return eliminations
-
-    @gl.public.view
-    def get_all_eliminations(self) -> typing.Any:
-        """
-        Get all elimination records for all players.
-        """
-        eliminations = []
-        for i in range(len(self.player_eliminations)):
-            elim = self.player_eliminations[i]
-            eliminations.append(
-                {
-                    "player_index": int(elim.player_index),
-                    "player_address": elim.player_address.as_hex,
-                    "player_hand": elim.player_hand,
-                    "opponent_hand": elim.opponent_hand,
-                    "board_cards": elim.board_cards,
-                    "is_cooler": elim.is_cooler,
-                    "hand_rank_player": elim.hand_rank_player,
-                    "hand_rank_opponent": elim.hand_rank_opponent,
-                }
-            )
-        return eliminations
-
-    @gl.public.view
-    def get_cooler_info(self) -> typing.Any:
-        """
-        Get information about whether there were coolers in the last hand.
-
-        Returns:
-            Dictionary with cooler information:
-            - has_cooler: bool indicating if there was at least one cooler
-            - cooler_player_indices: list of player indices who were eliminated in coolers (can be multiple)
-        """
-        cooler_indices_list = []
-        for i in range(len(self.cooler_player_indices)):
-            cooler_indices_list.append(int(self.cooler_player_indices[i]))
-
-        return {
-            "has_cooler": self.has_cooler,
-            "cooler_player_indices": cooler_indices_list,
-        }
-
-    @gl.public.view
-    def get_winner_info(self) -> typing.Any:
-        """
-        Get information about the winner of the last hand.
-
-        Returns:
-            Dictionary with winner information:
-            - winner_index: int index of the winning player (999999 if tie)
-            - winner_hand_rank: str describing the winning hand (e.g., "Pocket Aces", "Flush")
-            - is_tie: bool indicating if there was a tie
-            - tie_players: list of player indices who tied (empty if no tie)
-        """
-        tie_players_list = []
-        for i in range(len(self.tie_players)):
-            tie_players_list.append(int(self.tie_players[i]))
-
-        return {
-            "winner_index": int(self.hand_winner_index),
-            "winner_hand_rank": self.winner_hand_rank,
-            "is_tie": int(self.hand_winner_index) == 999999,
-            "tie_players": tie_players_list,
         }
