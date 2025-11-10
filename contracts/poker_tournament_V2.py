@@ -15,8 +15,6 @@ class PlayerElimination:
     player_hand: str
     opponent_hand: str
     board_cards: str
-    hand_rank_player: str
-    hand_rank_opponent: str
 
 
 class PokerTournament(gl.Contract):
@@ -39,10 +37,6 @@ class PokerTournament(gl.Contract):
     tournament_winner_index: u256  # Index of the tournament winner
     set_players_done: bool  # Whether players have been set (can only be set once)
 
-    winner_hand_rank: (
-        str  # Hand rank of the winner (e.g., "Pocket Aces", "Flush", "Straight")
-    )
-
     def __init__(self):
         # DynArray are automatically initialized by GenLayer
         self.board_cards = ""
@@ -50,8 +44,7 @@ class PokerTournament(gl.Contract):
         self.pot = u256(0)
         self.tournament_finished = False
         self.tournament_winner_index = u256(0)
-        self.set_players = False
-        self.winner_hand_rank = ""
+        self.set_players_done = False
 
     @gl.public.view
     def get_state(self) -> typing.Any:
@@ -82,18 +75,7 @@ class PokerTournament(gl.Contract):
             "last_pot_distribution": last_distribution_list,
             "tournament_finished": self.tournament_finished,
             "tournament_winner_index": int(self.tournament_winner_index),
-        }
-
-    @gl.public.view
-    def get_player_eliminations(self) -> typing.Any:
-        """
-        Get the list of player eliminations.
-        """
-        eliminations_list = []
-        for address in self.player_eliminations:
-            eliminations_list.append(self.player_eliminations[address])
-        return {
-            "player_eliminations": eliminations_list,
+            "set_players_done": self.set_players_done,
         }
 
     @gl.public.view
@@ -101,9 +83,11 @@ class PokerTournament(gl.Contract):
         """
         Get the elimination record for a specific player.
         """
-        address = Address(player_address)
-        if address in self.player_eliminations:
-            elimination = self.player_eliminations[address]
+        player_addr = Address(player_address)
+
+        # Access TreeMap by key directly
+        if player_addr in self.player_eliminations:
+            elimination = self.player_eliminations[player_addr]
             return {
                 "player_index": int(elimination.player_index),
                 "player_address": elimination.player_address.as_hex,
@@ -111,7 +95,14 @@ class PokerTournament(gl.Contract):
                 "opponent_hand": elimination.opponent_hand,
                 "board_cards": elimination.board_cards,
             }
-        return {}
+
+        return {
+            "player_index": -1,
+            "player_address": "",
+            "player_hand": "",
+            "opponent_hand": "",
+            "board_cards": "",
+        }
 
     @gl.public.view
     def get_last_winner(self) -> typing.Any:
@@ -140,7 +131,6 @@ class PokerTournament(gl.Contract):
         Returns:
             Dictionary with winner information:
             - winner_index: int index of the winning player (999999 if tie)
-            - winner_hand_rank: str describing the winning hand (e.g., "Pocket Aces", "Flush")
             - is_tie: bool indicating if there was a tie
             - tie_players: list of player indices who tied (empty if no tie)
         """
@@ -150,7 +140,6 @@ class PokerTournament(gl.Contract):
 
         return {
             "winner_index": int(self.hand_winner_index),
-            "winner_hand_rank": self.winner_hand_rank,
             "is_tie": int(self.hand_winner_index) == 999999,
             "tie_players": tie_players_list,
         }
@@ -185,29 +174,6 @@ class PokerTournament(gl.Contract):
 
         return {
             "winner_address": winner_address,
-            "tournament_finished": True,
-        }
-
-    @gl.public.view
-    def get_tournament_winner_hand_rank(self) -> typing.Any:
-        """
-        Get the hand rank with which the tournament was won.
-
-        Returns:
-            Dictionary with tournament winner hand rank:
-            - winner_hand_rank: str describing the hand rank with which the tournament was won (e.g., "Pocket Aces", "Flush")
-            - tournament_finished: bool indicating if the tournament has finished
-            - Returns empty string for winner_hand_rank if tournament has not finished
-        """
-        if not self.tournament_finished:
-            return {
-                "winner_hand_rank": "",
-                "tournament_finished": False,
-            }
-
-        # Tournament has finished, return the hand rank of the last winning hand
-        return {
-            "winner_hand_rank": self.winner_hand_rank if self.winner_hand_rank else "",
             "tournament_finished": True,
         }
 
@@ -376,18 +342,6 @@ TEXAS HOLD'EM RULES:
 - You can use 0, 1, or 2 of your private cards, and 5, 4, or 3 of the community cards respectively
 - The player with the highest-ranking 5-card hand wins
 
-HAND RANKINGS (from highest to lowest):
-1. Royal Flush: A-K-Q-J-10 all of the same suit
-2. Straight Flush: Five consecutive cards of the same suit (e.g., 9-8-7-6-5 of hearts)
-3. Four of a Kind: Four cards of the same rank (e.g., four Kings)
-4. Full House: Three of a kind + a pair (e.g., three 7s and two Aces)
-5. Flush: Five cards of the same suit, not in sequence
-6. Straight: Five consecutive cards of different suits (e.g., 10-9-8-7-6)
-7. Three of a Kind: Three cards of the same rank (e.g., three Queens)
-8. Two Pair: Two different pairs (e.g., two Kings and two 5s)
-9. One Pair: Two cards of the same rank (e.g., two Jacks)
-10. High Card: No pair, highest card wins
-
 COMPARING HANDS:
 - If two players have the same hand type, compare the rank values:
   - Card ranks: 2 < 3 < 4 < 5 < 6 < 7 < 8 < 9 < 10 < J < Q < K < A
@@ -401,20 +355,6 @@ COMPARING HANDS:
 TIE RULES:
 - If multiple players have identical 5-card hands (same ranks, regardless of suits), they tie
 - Example: Player 1 has K♠K♥ and Player 2 has K♦K♣ with board K♠Q♠J♠10♠9♠ - both have King-high flush, it's a tie
-
-HAND RANK FORMAT (CRITICAL - USE EXACTLY THESE FORMATS):
-- Pocket pairs: "Pocket Aces", "Pocket Kings", "Pocket Queens", "Pocket Jacks", "Pocket Tens", "Pocket Nines", etc.
-- Pairs on board: "Pair of Aces", "Pair of Kings", etc.
-- Two Pair: "Two Pair, Aces and Kings", "Two Pair, Queens and Jacks", etc.
-- Three of a Kind: "Three Aces", "Three Kings", etc.
-- Straight: "Straight, Ace-high", "Straight, King-high", etc.
-- Flush: "Flush, Ace-high", "Flush, King-high", etc.
-- Full House: "Full House, Aces over Kings", "Full House, Queens over Jacks", etc.
-- Four of a Kind: "Four Aces", "Four Kings", etc.
-- Straight Flush: "Straight Flush, Ace-high", "Straight Flush, King-high", etc.
-- Royal Flush: "Royal Flush"
-- High Card: "High Card, Ace", "High Card, King", etc.
-
 
 
 CARD NOTATION:
@@ -434,16 +374,11 @@ Respond in JSON with EXACTLY this structure (no extra fields, no missing fields)
 {{
     "winner_index": int, // Index of winning player (0-based), or -1 if there is a tie
     "tie_players": [int], // Array of all player indices who tied for the win (empty array [] if no tie, all tied player indices if winner_index is -1)
-    "winner_hand_rank": str, // Hand rank of the winner using EXACT format from HAND RANK FORMAT section above
-    "hand_ranks": [str] // Array of hand ranks for each player in order (one entry per player, use EXACT format from HAND RANK FORMAT section above)
 }}
 
 CRITICAL REQUIREMENTS:
 - If there is a single winner, set winner_index to that player's index (0-based) and tie_players to []
 - If there is a tie, set winner_index to -1 and tie_players to an array containing ALL tied player indices
-- winner_hand_rank MUST use one of the exact formats from HAND RANK FORMAT section above
-- hand_ranks MUST have exactly one entry per player, in player order (Player 0, Player 1, Player 2, etc.)
-- Each hand_rank entry MUST use one of the exact formats from HAND RANK FORMAT section above
 - Your response must be ONLY valid JSON, no markdown, no code blocks, no explanations, nothing else
 - Do not include any text before or after the JSON
 - Ensure all arrays are properly formatted (use [] for empty arrays, not null or undefined)
@@ -463,28 +398,17 @@ CRITICAL REQUIREMENTS:
             raise Exception("Missing winner_index in LLM response")
         if "tie_players" not in result_json:
             result_json["tie_players"] = []
-        if "winner_hand_rank" not in result_json:
-            result_json["winner_hand_rank"] = ""
-        if "hand_ranks" not in result_json:
-            result_json["hand_ranks"] = []
 
         # Normalize types to ensure consistency
         winner_index = int(result_json.get("winner_index", -1))
         tie_players = result_json.get("tie_players", [])
         if not isinstance(tie_players, list):
             tie_players = []
-        winner_hand_rank = str(result_json.get("winner_hand_rank", ""))
-        hand_ranks = result_json.get("hand_ranks", [])
-        if not isinstance(hand_ranks, list):
-            hand_ranks = []
 
         if winner_index >= 0:
             self.hand_winner_index = u256(winner_index)
         else:
             self.hand_winner_index = u256(999999)
-
-        # Store winner hand rank
-        self.winner_hand_rank = winner_hand_rank if winner_hand_rank else ""
 
         # Reset tie_players storage array
         while len(self.tie_players) > 0:
@@ -555,20 +479,6 @@ CRITICAL REQUIREMENTS:
                 else:
                     opponent_hand = ""
 
-                # Get hand ranks from the determine_winner result
-                if hand_ranks and i < len(hand_ranks):
-                    hand_rank_player = hand_ranks[i]
-                else:
-                    hand_rank_player = "Unknown"
-
-                # Get opponent hand rank
-                if winner_index >= 0 and hand_ranks and winner_index < len(hand_ranks):
-                    hand_rank_opponent = hand_ranks[winner_index]
-                elif winner_hand_rank:
-                    hand_rank_opponent = winner_hand_rank
-                else:
-                    hand_rank_opponent = "Unknown"
-
                 # Create elimination record (only if player hasn't been eliminated before)
                 if player_address not in self.player_eliminations:
                     elimination = PlayerElimination(
@@ -577,8 +487,6 @@ CRITICAL REQUIREMENTS:
                         player_hand=players[i],
                         opponent_hand=opponent_hand,
                         board_cards=board_cards,
-                        hand_rank_player=hand_rank_player,
-                        hand_rank_opponent=hand_rank_opponent,
                     )
                     self.player_eliminations[player_address] = elimination
 
