@@ -47,7 +47,6 @@ class PokerCoolerInsurance(gl.Contract):
         self.insurance_premium_rate = u256(500)
         # Default: 50% of buy-in payout (5000 = 50%)
         self.payout_rate = u256(5000)
-
     def _check_cooler(
         self,
         player_hand: str,
@@ -63,7 +62,7 @@ class PokerCoolerInsurance(gl.Contract):
             board_cards: Optional board cards if applicable
 
         Returns:
-            dict with is_cooler (bool), player_hand_rank (str), opponent_hand_rank (str), and explanation (str)
+            dict with is_cooler (bool), player_hand_rank (str), opponent_hand_rank (str), 
         """
 
         def verify_cooler() -> str:
@@ -87,7 +86,6 @@ Respond in JSON:
     "is_cooler": bool, // true if this is a cooler situation
     "player_hand_rank": str, // e.g., "Pocket Aces", "Flush", "Straight", "Top Pair"
     "opponent_hand_rank": str, // e.g., "Pocket Aces", "Flush", "Straight", "Top Pair"
-    "explanation": str // brief explanation of why it is or isn't a cooler
 }}
 It is mandatory that you respond only using the JSON format above,
 nothing else. Don't include any other words or characters,
@@ -301,7 +299,6 @@ This result should be perfectly parsable by a JSON parser without errors.
             "payout_amount": int(payout_amount),
             "player_hand_rank": cooler_result.get("player_hand_rank", ""),
             "opponent_hand_rank": cooler_result.get("opponent_hand_rank", ""),
-            "explanation": cooler_result.get("explanation", ""),
         }
 
     @gl.public.write
@@ -355,19 +352,40 @@ This result should be perfectly parsable by a JSON parser without errors.
         return self._process_claim(policy, policy_id)
 
     @gl.public.view
-    def get_policy(self, policy_id: str) -> typing.Any:
+    def get_policy(self, 
+        tournament_address: str,
+        registration_date: str,
+        player_address: str,) -> typing.Any:
         """
         Get an insurance policy by ID.
-
-        Args:
-            policy_id: ID of the insurance policy
-
+         Args:
+            tournament_address: Address of the poker tournament contract
+            registration_date: Date of registration
+            player_address: Address of the player
         Returns:
             dict with policy information
         """
+        if not tournament_address:
+            raise Exception("tournament_address is required")
+
+        if not registration_date:
+            raise Exception("registration_date is required")
+        if not player_address:
+            raise Exception("player_address is required")
+
+        tournament_addr = Address(tournament_address)
+
+        # Convert player_address string to Address object
+        player_addr = Address(player_address)
+
+
+        # Generate policy ID based on tournament address, player address, and registration date
+        policy_id = f"{tournament_addr.as_hex}_{player_addr.as_hex}_{registration_date}"
+
+        # Check if policy already exists
         if policy_id not in self.player_policies:
             raise Exception(f"Insurance policy {policy_id} not found")
-
+            
         policy = self.player_policies[policy_id]
         return {
             "id": policy.id,
@@ -432,6 +450,7 @@ This result should be perfectly parsable by a JSON parser without errors.
 
         # Calculate payout (payout_rate is in basis points)
         payout = (buy_in * int(self.payout_rate)) // 10000
+
 
         return {
             "tournament_buy_in": buy_in,
